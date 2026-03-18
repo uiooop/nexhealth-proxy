@@ -40,6 +40,32 @@ app.get('/patients', async (req, res) => {
   }
 });
 
+// Get providers
+app.get('/providers', async (req, res) => {
+  try {
+    const response = await axios.get(`${BASE_URL}/providers`, {
+      headers,
+      params: req.query
+    });
+    res.json(response.data);
+  } catch (err) {
+    res.status(err.response?.status || 500).json(err.response?.data || { error: 'Failed' });
+  }
+});
+
+// Get appointment types
+app.get('/appointment_types', async (req, res) => {
+  try {
+    const response = await axios.get(`${BASE_URL}/appointment_types`, {
+      headers,
+      params: req.query
+    });
+    res.json(response.data);
+  } catch (err) {
+    res.status(err.response?.status || 500).json(err.response?.data || { error: 'Failed' });
+  }
+});
+
 // Get appointment slots
 app.get('/appointment_slots', async (req, res) => {
   try {
@@ -63,16 +89,9 @@ app.post('/appointments', async (req, res) => {
   }
 });
 
-// Get providers
-app.get('/providers', async (req, res) => {
-  try {
-    const response = await axios.get(`${BASE_URL}/providers`, {
-      headers,
-      params: req.query
-    });
-    res.json(response.data);
-  } catch (err) {
-    res.status(err.response?.status || 500).json(err.response?.data || { error: 'Failed' });
-  }
-});
 app.listen(process.env.PORT || 3000, () => console.log('Proxy running'));
+```
+
+Commit it, wait 60 seconds, then hit:
+```
+https://nexhealth-proxy-production.up.railway.app/appointment_types?subdomain=ram-demo-practice&location_id=341423
