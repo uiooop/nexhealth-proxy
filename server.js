@@ -14,6 +14,19 @@ const headers = {
   'Accept': 'application/vnd.Nexhealth+json;version=2'
 };
 
+// Get locations
+app.get('/locations', async (req, res) => {
+  try {
+    const response = await axios.get(`${BASE_URL}/locations`, {
+      headers,
+      params: req.query
+    });
+    res.json(response.data);
+  } catch (err) {
+    res.status(err.response?.status || 500).json(err.response?.data || { error: 'Failed' });
+  }
+});
+
 // Get patients
 app.get('/patients', async (req, res) => {
   try {
