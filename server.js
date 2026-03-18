@@ -62,5 +62,16 @@ app.post('/appointments', async (req, res) => {
     res.status(err.response?.status || 500).json(err.response?.data || { error: 'Failed' });
   }
 });
-
+// Get providers
+app.get('/providers', async (req, res) => {
+  try {
+    const response = await axios.get(`${BASE_URL}/providers`, {
+      headers,
+      params: req.query
+    });
+    res.json(response.data);
+  } catch (err) {
+    res.status(err.response?.status || 500).json(err.response?.data || { error: 'Failed' });
+  }
+});
 app.listen(process.env.PORT || 3000, () => console.log('Proxy running'));
