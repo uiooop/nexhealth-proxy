@@ -62,6 +62,7 @@ app.post('/appointments', async (req, res) => {
     res.status(err.response?.status || 500).json(err.response?.data || { error: 'Failed' });
   }
 });
+
 // Get providers
 app.get('/providers', async (req, res) => {
   try {
