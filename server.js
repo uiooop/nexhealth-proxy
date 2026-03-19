@@ -10,6 +10,7 @@ const headers = {
   'Authorization': NEXHEALTH_API_KEY,
   'Accept': 'application/vnd.Nexhealth+json;version=2'
 };
+
 app.get('/locations', async (req, res) => {
   try {
     const response = await axios.get(`${BASE_URL}/locations`, { headers, params: req.query });
@@ -18,6 +19,7 @@ app.get('/locations', async (req, res) => {
     res.status(err.response?.status || 500).json(err.response?.data || { error: 'Failed' });
   }
 });
+
 app.get('/patients', async (req, res) => {
   try {
     const response = await axios.get(`${BASE_URL}/patients`, { headers, params: req.query });
@@ -26,6 +28,7 @@ app.get('/patients', async (req, res) => {
     res.status(err.response?.status || 500).json(err.response?.data || { error: 'Failed' });
   }
 });
+
 app.get('/providers', async (req, res) => {
   try {
     const response = await axios.get(`${BASE_URL}/providers`, { headers, params: req.query });
@@ -34,6 +37,16 @@ app.get('/providers', async (req, res) => {
     res.status(err.response?.status || 500).json(err.response?.data || { error: 'Failed' });
   }
 });
+
+app.get('/operatories', async (req, res) => {
+  try {
+    const response = await axios.get(`${BASE_URL}/operatories`, { headers, params: req.query });
+    res.json(response.data);
+  } catch (err) {
+    res.status(err.response?.status || 500).json(err.response?.data || { error: 'Failed' });
+  }
+});
+
 app.get('/appointment_types', async (req, res) => {
   try {
     const response = await axios.get(`${BASE_URL}/appointment_types`, { headers, params: req.query });
@@ -42,6 +55,7 @@ app.get('/appointment_types', async (req, res) => {
     res.status(err.response?.status || 500).json(err.response?.data || { error: 'Failed' });
   }
 });
+
 app.post('/appointment_types', async (req, res) => {
   try {
     const response = await axios.post(`${BASE_URL}/appointment_types`, req.body, {
@@ -53,6 +67,7 @@ app.post('/appointment_types', async (req, res) => {
     res.status(err.response?.status || 500).json(err.response?.data || { error: 'Failed' });
   }
 });
+
 app.get('/appointment_slots', async (req, res) => {
   try {
     const response = await axios.get(`${BASE_URL}/appointment_slots`, { headers, params: req.query });
@@ -61,14 +76,7 @@ app.get('/appointment_slots', async (req, res) => {
     res.status(err.response?.status || 500).json(err.response?.data || { error: 'Failed' });
   }
 });
-app.post('/appointments', async (req, res) => {
-  try {
-    const response = await axios.post(`${BASE_URL}/appointments`, req.body, { headers });
-    res.json(response.data);
-  } catch (err) {
-    res.status(err.response?.status || 500).json(err.response?.data || { error: 'Failed' });
-  }
-});
+
 app.get('/availabilities', async (req, res) => {
   try {
     const response = await axios.get(`${BASE_URL}/availabilities`, { headers, params: req.query });
@@ -77,6 +85,7 @@ app.get('/availabilities', async (req, res) => {
     res.status(err.response?.status || 500).json(err.response?.data || { error: 'Failed' });
   }
 });
+
 app.post('/availabilities', async (req, res) => {
   try {
     const response = await axios.post(`${BASE_URL}/availabilities`, req.body, {
@@ -88,12 +97,19 @@ app.post('/availabilities', async (req, res) => {
     res.status(err.response?.status || 500).json(err.response?.data || { error: 'Failed' });
   }
 });
-app.get('/operatories', async (req, res) => {
+
+app.post('/appointments', async (req, res) => {
   try {
-    const response = await axios.get(`${BASE_URL}/operatories`, { headers, params: req.query });
+    const { subdomain, appt } = req.body;
+    const response = await axios.post(
+      `${BASE_URL}/appointments?subdomain=${subdomain}&location_id=${appt.location_id}`,
+      { appt },
+      { headers: { ...headers, 'Content-Type': 'application/json' } }
+    );
     res.json(response.data);
   } catch (err) {
     res.status(err.response?.status || 500).json(err.response?.data || { error: 'Failed' });
   }
 });
+
 app.listen(process.env.PORT || 3000, () => console.log('Proxy running'));
