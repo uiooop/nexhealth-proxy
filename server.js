@@ -112,4 +112,17 @@ app.post('/appointments', async (req, res) => {
   }
 });
 
+app.get('/appointments', async (req, res) => {
+  try {
+    const response = await axios.get(`${BASE_URL}/appointments`, { headers, params: req.query });
+    res.json(response.data);
+  } catch (err) {
+    res.status(err.response?.status || 500).json(err.response?.data || { error: 'Failed' });
+  }
+});
+```
+
+Commit, wait 60 seconds, then hit:
+```
+https://nexhealth-proxy-production.up.railway.app/appointments?subdomain=ram-demo-practice&location_id=343995
 app.listen(process.env.PORT || 3000, () => console.log('Proxy running'));
