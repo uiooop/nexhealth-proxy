@@ -31,10 +31,11 @@ app.get('/patients', async (req, res) => {
 
 app.post('/patients', async (req, res) => {
   try {
-    const response = await axios.post(`${BASE_URL}/patients`, req.body, {
-      headers: { ...headers, 'Content-Type': 'application/json' },
-      params: req.query
-    });
+    const response = await axios.post(
+      `${BASE_URL}/patients?subdomain=${req.query.subdomain}&location_id=${req.query.location_id}`,
+      req.body,
+      { headers: { ...headers, 'Content-Type': 'application/json' } }
+    );
     res.json(response.data);
   } catch (err) {
     res.status(err.response?.status || 500).json(err.response?.data || { error: 'Failed' });
