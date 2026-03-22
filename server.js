@@ -1,6 +1,8 @@
 const express = require('express');
 const axios = require('axios');
 const cors = require('cors');
+const multer = require('multer');
+const upload = multer();
 const app = express();
 app.use(cors());
 app.use(express.json());
@@ -138,11 +140,9 @@ app.post('/appointments', async (req, res) => {
 });
 
 // ── JOTFORM WEBHOOK ──
-app.post('/webhook/jotform', async (req, res) => {
+app.post('/webhook/jotform', upload.none(), async (req, res) => {
   try {
-    console.log('BODY:', JSON.stringify(req.body));
-    console.log('QUERY:', JSON.stringify(req.query));
-    console.log('HEADERS:', JSON.stringify(req.headers));
+    console.log('BODY:', JSON.stringify(req.body, null, 2));
     res.status(200).json({ received: true });
   } catch (err) {
     console.error('Error:', err.message);
