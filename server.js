@@ -142,10 +142,68 @@ app.post('/appointments', async (req, res) => {
 // ── JOTFORM WEBHOOK ──
 app.post('/webhook/jotform', upload.none(), async (req, res) => {
   try {
-    console.log('BODY:', JSON.stringify(req.body, null, 2));
+    const raw = JSON.parse(req.body.rawRequest || '{}');
+    const firstName = raw.q4_patientname?.first || '';
+    const lastName = raw.q4_patientname?.last || '';
+    const email = raw.q8_email || '';
+    const phone = raw.q10_phone?.full || '';
+    const month = raw.q5_birthdate?.month || '';
+    const day = raw.q5_birthdate?.day || '';
+    const year = raw.q5_birthdate?.year || '';
+    const dob = year && month && day ? `${year}-${month.padStart(2,'0')}-${day.padStart(2,'0')}` : '';
+    const address = raw.q11_address?.addr_line1 || '';
+    const city = raw.q12_citystate?.city || '';
+    const state = raw.q12_citystate?.state || '';
+    const zip = raw.q12_citystate?.postal || '';
+
+    console.log('JotForm patient:', { firstName, lastName, email, phone, dob });
+
+    if (!firstName || !lastName) {
+      console.log('Missing name — skipping');
+      return res.status(200).json({ received: true });
+    }
+
+    // Search for existing patient
+    const searchRes = await axios.get(`${BASE_URL}/patients`, {
+      headers,
+      params: { subdomain: SUBDOMAIN, location_id: LOCATION_ID, name: `${firstName} ${lastName}` }
+    });
+    const patients = searchRes.data?.data?.patients || [];
+    const existing = patients.find(p =>
+      p.first_name?.toLowerCase() === firstName.toLowerCase() &&
+      p.last_name?.toLowerCase() === lastName.toLowerCase()
+    );
+
+    if (existing) {
+      console.log('Patient already exists:', existing.id);
+    } else {
+      // Create new patient
+      const createRes = await axios.post(
+        `${BASE_URL}/patients?subdomain=${SUBDOMAIN}&location_id=${LOCATION_ID}`,
+        {
+          patient: {
+            first_name: firstName,
+            last_name: lastName,
+            email: email,
+            bio: {
+              phone_number: phone,
+              date_of_birth: dob,
+              address_line_1: address,
+              city: city,
+              state: state,
+              zip_code: zip
+            }
+          },
+          provider: { provider_id: 465425250 }
+        },
+        { headers: { ...headers, 'Content-Type': 'application/json' } }
+      );
+      console.log('Created patient:', createRes.data?.data?.user?.id);
+    }
+
     res.status(200).json({ received: true });
   } catch (err) {
-    console.error('Error:', err.message);
+    console.error('Webhook error:', err.message);
     res.status(200).json({ received: true });
   }
 });
