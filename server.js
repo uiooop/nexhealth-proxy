@@ -127,7 +127,8 @@ app.get('/appointments', async (req, res) => {
 
 app.post('/appointments', async (req, res) => {
   try {
-    const { subdomain, appt } = req.body;
+    const subdomain = req.query.subdomain || req.body.subdomain;
+    const appt = req.body.appt;
     const response = await axios.post(
       `${BASE_URL}/appointments?subdomain=${subdomain}&location_id=${appt.location_id}`,
       { appt },
@@ -163,7 +164,6 @@ app.post('/webhook/jotform', upload.none(), async (req, res) => {
       return res.status(200).json({ received: true });
     }
 
-    // Search for existing patient
     const searchRes = await axios.get(`${BASE_URL}/patients`, {
       headers,
       params: { subdomain: SUBDOMAIN, location_id: LOCATION_ID, name: `${firstName} ${lastName}` }
@@ -177,7 +177,6 @@ app.post('/webhook/jotform', upload.none(), async (req, res) => {
     if (existing) {
       console.log('Patient already exists:', existing.id);
     } else {
-      // Create new patient
       const createRes = await axios.post(
         `${BASE_URL}/patients?subdomain=${SUBDOMAIN}&location_id=${LOCATION_ID}`,
         {
