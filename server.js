@@ -47,6 +47,27 @@ app.post('/patients', async (req, res) => {
   }
 });
 
+app.get('/patients/:id/documents', async (req, res) => {
+  try {
+    const response = await axios.get(`${BASE_URL}/patients/${req.params.id}/documents`, { headers, params: req.query });
+    res.json(response.data);
+  } catch (err) {
+    res.status(err.response?.status || 500).json(err.response?.data || { error: 'Failed' });
+  }
+});
+
+app.post('/patients/:id/documents', async (req, res) => {
+  try {
+    const response = await axios.post(`${BASE_URL}/patients/${req.params.id}/documents`, req.body, {
+      headers: { ...headers, 'Content-Type': 'application/json' },
+      params: req.query
+    });
+    res.json(response.data);
+  } catch (err) {
+    res.status(err.response?.status || 500).json(err.response?.data || { error: 'Failed' });
+  }
+});
+
 app.get('/providers', async (req, res) => {
   try {
     const response = await axios.get(`${BASE_URL}/providers`, { headers, params: req.query });
