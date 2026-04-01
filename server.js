@@ -10,8 +10,8 @@ app.use(express.urlencoded({ extended: true }));
 
 const NEXHEALTH_API_KEY = process.env.NEXHEALTH_API_KEY;
 const BASE_URL = 'https://nexhealth.info';
-const SUBDOMAIN = 'ahs-demo-practice';
-const LOCATION_ID = '344934';
+const SUBDOMAIN = 'dr-grant-dds';
+const LOCATION_ID = '345138';
 const headers = {
   'Authorization': NEXHEALTH_API_KEY,
   'Accept': 'application/vnd.Nexhealth+json;version=2'
@@ -240,10 +240,17 @@ app.get('/payments', async (req, res) => {
   }
 });
 
-// ── GUARANTOR BALANCES ────────────────────────────────────────
+// ── GUARANTOR BALANCES (FIXED: uses guarantor_id in path) ─────
 app.get('/guarantor_balances', async (req, res) => {
   try {
-    const response = await axios.get(`${BASE_URL}/guarantor_balances`, { headers, params: req.query });
+    const { subdomain, guarantor_id, location_id } = req.query;
+    const url = guarantor_id
+      ? `${BASE_URL}/guarantor_balances/${guarantor_id}`
+      : `${BASE_URL}/guarantor_balances`;
+    const response = await axios.get(url, {
+      headers,
+      params: guarantor_id ? { subdomain } : { subdomain, location_id }
+    });
     res.json(response.data);
   } catch (err) {
     res.status(err.response?.status || 500).json(err.response?.data || { error: 'Failed' });
