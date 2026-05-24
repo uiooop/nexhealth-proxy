@@ -10,8 +10,8 @@ app.use(express.urlencoded({ extended: true }));
 
 const NEXHEALTH_API_KEY = process.env.NEXHEALTH_API_KEY;
 const BASE_URL = 'https://nexhealth.info';
-const SUBDOMAIN = 'dr-grant-dds';
-const LOCATION_ID = '345267';
+const SUBDOMAIN = 'ahs-practice';
+const LOCATION_ID = '347899';
 const headers = {
   'Authorization': NEXHEALTH_API_KEY,
   'Accept': 'application/vnd.Nexhealth+json;version=2'
