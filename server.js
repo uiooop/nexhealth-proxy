@@ -2,6 +2,7 @@ const express = require('express');
 const axios = require('axios');
 const cors = require('cors');
 const multer = require('multer');
+const FormData = require('form-data');
 const upload = multer();
 const app = express();
 app.use(cors());
@@ -71,12 +72,48 @@ app.get('/patients/:id/documents', async (req, res) => {
   }
 });
 
-app.post('/patients/:id/documents', async (req, res) => {
+// FIXED: now properly forwards multipart/form-data with file uploads
+app.post('/patients/:id/documents', upload.single('file'), async (req, res) => {
   try {
-    const response = await axios.post(`${BASE_URL}/patients/${req.params.id}/documents`, req.body, {
-      headers: { ...headers, 'Content-Type': 'application/json' },
-      params: req.query
-    });
+    const form = new FormData();
+    if (req.file) {
+      form.append('file', req.file.buffer, {
+        filename: req.file.originalname,
+        contentType: req.file.mimetype
+      });
+    }
+    if (req.body.document_type_id) {
+      form.append('document_type_id', req.body.document_type_id);
+    }
+    const response = await axios.post(
+      `${BASE_URL}/patients/${req.params.id}/documents`,
+      form,
+      {
+        headers: { ...headers, ...form.getHeaders() },
+        params: req.query,
+        maxContentLength: Infinity,
+        maxBodyLength: Infinity
+      }
+    );
+    res.json(response.data);
+  } catch (err) {
+    res.status(err.response?.status || 500).json(err.response?.data || { error: 'Failed' });
+  }
+});
+
+// ── DOCUMENT TYPES ────────────────────────────────────────────
+app.get('/document_types', async (req, res) => {
+  try {
+    const response = await axios.get(`${BASE_URL}/document_types`, { headers, params: req.query });
+    res.json(response.data);
+  } catch (err) {
+    res.status(err.response?.status || 500).json(err.response?.data || { error: 'Failed' });
+  }
+});
+
+app.get('/document_types/:id', async (req, res) => {
+  try {
+    const response = await axios.get(`${BASE_URL}/document_types/${req.params.id}`, { headers, params: req.query });
     res.json(response.data);
   } catch (err) {
     res.status(err.response?.status || 500).json(err.response?.data || { error: 'Failed' });
