@@ -394,4 +394,299 @@ app.post('/webhook/jotform', upload.none(), async (req, res) => {
   }
 });
 
+// ============================================================================
+// ║                                                                          ║
+// ║         JOTFORM VOICE AI ↔ NEXHEALTH BOOKING BRIDGE — Phase 1            ║
+// ║                                                                          ║
+// ║   Three routes the Jotform "Send API Request" tool calls during a live   ║
+// ║   conversation: lookup_patient → find_slots → book_appointment.          ║
+// ║                                                                          ║
+// ============================================================================
+
+const JF_SUBDOMAIN   = process.env.JF_SUBDOMAIN   || 'ahs-practice';
+const JF_LOCATION_ID = process.env.JF_LOCATION_ID || '347899';
+
+const JF_PROVIDERS = {
+  doc1:        '483310768',
+  doc2:        '483310770',
+  '483310768': '483310768',
+  '483310770': '483310770',
+};
+
+const JF_DEFAULT_MINUTES = 60;
+const JF_SECRET = process.env.JF_SECRET || null;
+
+function jfAuth(req, res, next) {
+  if (!JF_SECRET) return next();
+  if (req.get('x-jf-secret') !== JF_SECRET) {
+    return res.status(401).json({ ok: false, error: 'Unauthorized' });
+  }
+  next();
+}
+
+function jfLog(route, payload) {
+  console.log(`[JF ${new Date().toISOString()}] ${route}:`, JSON.stringify(payload));
+}
+
+function normalizePhone(p) {
+  return String(p || '').replace(/\D/g, '');
+}
+
+function resolveProviderId(input) {
+  if (!input) return null;
+  const key = String(input).toLowerCase().trim();
+  return JF_PROVIDERS[key] || JF_PROVIDERS[input] || null;
+}
+
+function minutesApart(isoA, isoB) {
+  return Math.abs(new Date(isoA) - new Date(isoB)) / 60000;
+}
+
+// ── /jf/lookup-patient ────────────────────────────────────────
+app.post('/jf/lookup-patient', jfAuth, async (req, res) => {
+  jfLog('lookup-patient IN', req.body);
+  try {
+    const { first_name, last_name, phone, dob, email } = req.body || {};
+    if (!first_name || !last_name || !phone || !dob) {
+      return res.status(400).json({
+        ok: false,
+        error: 'Missing required fields: first_name, last_name, phone, dob'
+      });
+    }
+
+    const phoneDigits = normalizePhone(phone);
+    const dobNorm = String(dob).slice(0, 10);
+
+    const searchResp = await axios.get(`${BASE_URL}/patients`, {
+      headers,
+      params: {
+        subdomain: JF_SUBDOMAIN,
+        location_id: JF_LOCATION_ID,
+        name: `${first_name} ${last_name}`,
+        per_page: 50
+      }
+    });
+
+    const patients = searchResp.data?.data?.patients || [];
+
+    const match = patients.find(p => {
+      const bioPhones = [
+        normalizePhone(p?.bio?.cell_phone_number),
+        normalizePhone(p?.bio?.phone_number),
+        normalizePhone(p?.bio?.home_phone_number),
+      ].filter(Boolean);
+      const pDob = String(p?.bio?.date_of_birth || '').slice(0, 10);
+      return bioPhones.includes(phoneDigits) && pDob === dobNorm;
+    });
+
+    if (match) {
+      jfLog('lookup-patient FOUND', { id: match.id });
+      return res.json({
+        ok: true,
+        patient_id: match.id,
+        created: false,
+        name: `${match.first_name} ${match.last_name}`
+      });
+    }
+
+    const createResp = await axios.post(
+      `${BASE_URL}/patients?subdomain=${JF_SUBDOMAIN}&location_id=${JF_LOCATION_ID}`,
+      {
+        provider: { provider_id: parseInt(JF_PROVIDERS.doc1, 10) },
+        patient: {
+          first_name,
+          last_name,
+          email: email || `${phoneDigits}@noemail.local`,
+          bio: {
+            date_of_birth: dobNorm,
+            phone_number: phoneDigits,
+            cell_phone_number: phoneDigits,
+            new_patient: true
+          }
+        }
+      },
+      { headers: { ...headers, 'Content-Type': 'application/json' } }
+    );
+
+    const newId = createResp.data?.data?.user?.id || createResp.data?.data?.id;
+    jfLog('lookup-patient CREATED', { id: newId });
+    return res.json({
+      ok: true,
+      patient_id: newId,
+      created: true,
+      name: `${first_name} ${last_name}`
+    });
+  } catch (err) {
+    jfLog('lookup-patient ERROR', err.response?.data || err.message);
+    return res.status(err.response?.status || 500).json({
+      ok: false,
+      error: err.response?.data?.error || err.message || 'lookup failed'
+    });
+  }
+});
+
+// ── /jf/find-slots ────────────────────────────────────────────
+app.post('/jf/find-slots', jfAuth, async (req, res) => {
+  jfLog('find-slots IN', req.body);
+  try {
+    const { doctor, preferred_datetime, days_window = 14 } = req.body || {};
+    const providerId = resolveProviderId(doctor);
+    if (!providerId) {
+      return res.status(400).json({
+        ok: false,
+        error: `Unknown doctor "${doctor}". Use doc1 or doc2.`
+      });
+    }
+
+    const preferred = preferred_datetime ? new Date(preferred_datetime) : new Date();
+    if (isNaN(preferred)) {
+      return res.status(400).json({
+        ok: false,
+        error: 'preferred_datetime must be ISO 8601 (e.g. 2026-06-02T14:00:00-04:00)'
+      });
+    }
+
+    const tomorrow = new Date();
+    tomorrow.setDate(tomorrow.getDate() + 1);
+    const startDate = (preferred < tomorrow ? tomorrow : preferred)
+      .toISOString().slice(0, 10);
+
+    const slotsResp = await axios.get(`${BASE_URL}/appointment_slots`, {
+      headers,
+      params: {
+        subdomain: JF_SUBDOMAIN,
+        'lids[]': JF_LOCATION_ID,
+        'pids[]': providerId,
+        start_date: startDate,
+        days: days_window,
+        slot_length: JF_DEFAULT_MINUTES
+      }
+    });
+
+    const groups = slotsResp.data?.data || [];
+    const allSlots = [];
+    for (const group of groups) {
+      for (const s of (group.slots || [])) {
+        allSlots.push({
+          time: s.time,
+          operatory_id: s.operatory_id,
+          provider_id: s.provider_id
+        });
+      }
+    }
+
+    if (allSlots.length === 0) {
+      return res.json({
+        ok: true,
+        slots: [],
+        message: `No openings found for the next ${days_window} days.`
+      });
+    }
+
+    allSlots.sort((a, b) =>
+      minutesApart(a.time, preferred.toISOString()) -
+      minutesApart(b.time, preferred.toISOString())
+    );
+
+    const top3 = allSlots.slice(0, 3).map(s => ({
+      ...s,
+      pretty: new Date(s.time).toLocaleString('en-US', {
+        weekday: 'short', month: 'short', day: 'numeric',
+        hour: 'numeric', minute: '2-digit', timeZoneName: 'short'
+      })
+    }));
+
+    jfLog('find-slots OUT', { count: top3.length, first: top3[0]?.time });
+    return res.json({
+      ok: true,
+      provider_id: providerId,
+      slots: top3,
+      message: `Nearest options: ${top3.map(s => s.pretty).join(' | ')}`
+    });
+  } catch (err) {
+    jfLog('find-slots ERROR', err.response?.data || err.message);
+    return res.status(err.response?.status || 500).json({
+      ok: false,
+      error: err.response?.data?.error || err.message || 'slot lookup failed'
+    });
+  }
+});
+
+// ── /jf/book-appointment ──────────────────────────────────────
+app.post('/jf/book-appointment', jfAuth, async (req, res) => {
+  jfLog('book-appointment IN', req.body);
+  try {
+    const {
+      patient_id,
+      provider_id,
+      operatory_id,
+      start_time,
+      note,
+      notify_patient = false
+    } = req.body || {};
+
+    if (!patient_id || !provider_id || !start_time) {
+      return res.status(400).json({
+        ok: false,
+        error: 'Missing required: patient_id, provider_id, start_time'
+      });
+    }
+
+    const apptBody = {
+      appt: {
+        patient_id: parseInt(patient_id, 10),
+        provider_id: parseInt(provider_id, 10),
+        start_time,
+        note: note || 'Booked via Claraion voice AI'
+      }
+    };
+    if (operatory_id) apptBody.appt.operatory_id = parseInt(operatory_id, 10);
+
+    const bookResp = await axios.post(
+      `${BASE_URL}/appointments?subdomain=${JF_SUBDOMAIN}` +
+        `&location_id=${JF_LOCATION_ID}&notify_patient=${notify_patient}`,
+      apptBody,
+      { headers: { ...headers, 'Content-Type': 'application/json' } }
+    );
+
+    const apptId = bookResp.data?.data?.appt?.id ||
+                   bookResp.data?.data?.id;
+
+    const pretty = new Date(start_time).toLocaleString('en-US', {
+      weekday: 'long', month: 'long', day: 'numeric',
+      hour: 'numeric', minute: '2-digit', timeZoneName: 'short'
+    });
+
+    jfLog('book-appointment OK', { id: apptId });
+    return res.json({
+      ok: true,
+      appointment_id: apptId,
+      confirmation: `You're booked for ${pretty}. We'll see you then!`
+    });
+  } catch (err) {
+    jfLog('book-appointment ERROR', err.response?.data || err.message);
+    return res.status(err.response?.status || 500).json({
+      ok: false,
+      error: err.response?.data?.error || err.message || 'booking failed'
+    });
+  }
+});
+
+// ── HEALTH CHECK ──────────────────────────────────────────────
+app.get('/jf/health', (req, res) => {
+  res.json({
+    ok: true,
+    bridge: 'Jotform ↔ NexHealth',
+    secret_required: !!JF_SECRET,
+    subdomain: JF_SUBDOMAIN,
+    location_id: JF_LOCATION_ID,
+    providers: Object.keys(JF_PROVIDERS).filter(k => k.startsWith('doc')),
+    timestamp: new Date().toISOString()
+  });
+});
+
+// ============================================================================
+// END JOTFORM BRIDGE
+// ============================================================================
+
 app.listen(process.env.PORT || 3000, () => console.log('Proxy running'));
