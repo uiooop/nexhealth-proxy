@@ -1,15 +1,234 @@
 // =============================================================
-// 📬 MAILBOX — SOAP Note flow between Doctor app & Patient app
-// =============================================================
-// Add this BLOCK to server.js, right BEFORE the line:
-//   app.listen(PORT, ...)
+// AHS NEXHEALTH PROXY — Full server.js
+// Includes: NexHealth routes + Mailbox for SOAP note flow
 // =============================================================
 
-// In-memory mailbox (resets if Railway restarts — fine for testing)
+const express = require('express');
+const axios = require('axios');
+const cors = require('cors');
+const FormData = require('form-data');
+
+const app = express();
+const PORT = process.env.PORT || 3000;
+
+app.use(cors());
+app.use(express.json({ limit: '50mb' }));
+app.use(express.urlencoded({ extended: true, limit: '50mb' }));
+
+const BASE_URL = 'https://nexhealth.info';
+const API_KEY = process.env.NEXHEALTH_API_KEY;
+
+// =============================================================
+// AUTH — Get bearer token
+// =============================================================
+let cachedToken = null;
+let tokenExpiry = 0;
+
+async function getToken() {
+  if (cachedToken && Date.now() < tokenExpiry) return cachedToken;
+  const r = await axios.post(`${BASE_URL}/authenticates`, {}, {
+    headers: { 'Accept': 'application/vnd.Nexhealth+json;version=2', 'Authorization': API_KEY }
+  });
+  cachedToken = r.data.data.token;
+  tokenExpiry = Date.now() + 50 * 60 * 1000;
+  return cachedToken;
+}
+
+async function nexHeaders() {
+  const token = await getToken();
+  return {
+    'Accept': 'application/vnd.Nexhealth+json;version=2',
+    'Authorization': `Bearer ${token}`
+  };
+}
+
+// =============================================================
+// HEALTH CHECK
+// =============================================================
+app.get('/', (req, res) => {
+  res.json({ status: 'AHS NexHealth proxy running', time: new Date().toISOString() });
+});
+
+// =============================================================
+// PATIENTS
+// =============================================================
+app.get('/patients', async (req, res) => {
+  try {
+    const headers = await nexHeaders();
+    const r = await axios.get(`${BASE_URL}/patients`, { headers, params: req.query });
+    res.json(r.data);
+  } catch (err) {
+    res.status(err.response?.status || 500).json(err.response?.data || { error: err.message });
+  }
+});
+
+app.get('/patients/:id', async (req, res) => {
+  try {
+    const headers = await nexHeaders();
+    const r = await axios.get(`${BASE_URL}/patients/${req.params.id}`, { headers, params: req.query });
+    res.json(r.data);
+  } catch (err) {
+    res.status(err.response?.status || 500).json(err.response?.data || { error: err.message });
+  }
+});
+
+// =============================================================
+// PROVIDERS
+// =============================================================
+app.get('/providers', async (req, res) => {
+  try {
+    const headers = await nexHeaders();
+    const r = await axios.get(`${BASE_URL}/providers`, { headers, params: req.query });
+    res.json(r.data);
+  } catch (err) {
+    res.status(err.response?.status || 500).json(err.response?.data || { error: err.message });
+  }
+});
+
+// =============================================================
+// LOCATIONS
+// =============================================================
+app.get('/locations', async (req, res) => {
+  try {
+    const headers = await nexHeaders();
+    const r = await axios.get(`${BASE_URL}/locations`, { headers, params: req.query });
+    res.json(r.data);
+  } catch (err) {
+    res.status(err.response?.status || 500).json(err.response?.data || { error: err.message });
+  }
+});
+
+// =============================================================
+// APPOINTMENT SLOTS
+// =============================================================
+app.get('/appointment_slots', async (req, res) => {
+  try {
+    const headers = await nexHeaders();
+    const r = await axios.get(`${BASE_URL}/appointment_slots`, { headers, params: req.query });
+    res.json(r.data);
+  } catch (err) {
+    res.status(err.response?.status || 500).json(err.response?.data || { error: err.message });
+  }
+});
+
+// =============================================================
+// APPOINTMENT TYPES
+// =============================================================
+app.get('/appointment_types', async (req, res) => {
+  try {
+    const headers = await nexHeaders();
+    const r = await axios.get(`${BASE_URL}/appointment_types`, { headers, params: req.query });
+    res.json(r.data);
+  } catch (err) {
+    res.status(err.response?.status || 500).json(err.response?.data || { error: err.message });
+  }
+});
+
+// =============================================================
+// APPOINTMENTS
+// =============================================================
+app.get('/appointments', async (req, res) => {
+  try {
+    const headers = await nexHeaders();
+    const r = await axios.get(`${BASE_URL}/appointments`, { headers, params: req.query });
+    res.json(r.data);
+  } catch (err) {
+    res.status(err.response?.status || 500).json(err.response?.data || { error: err.message });
+  }
+});
+
+app.post('/appointments', async (req, res) => {
+  try {
+    const headers = await nexHeaders();
+    const r = await axios.post(`${BASE_URL}/appointments`, req.body, {
+      headers: { ...headers, 'Content-Type': 'application/json' },
+      params: req.query
+    });
+    res.json(r.data);
+  } catch (err) {
+    res.status(err.response?.status || 500).json(err.response?.data || { error: err.message });
+  }
+});
+
+// =============================================================
+// DOCUMENT TYPES
+// =============================================================
+app.get('/document_types', async (req, res) => {
+  try {
+    const headers = await nexHeaders();
+    const r = await axios.get(`${BASE_URL}/document_types`, { headers, params: req.query });
+    res.json(r.data);
+  } catch (err) {
+    res.status(err.response?.status || 500).json(err.response?.data || { error: err.message });
+  }
+});
+
+app.get('/document_types/:id', async (req, res) => {
+  try {
+    const headers = await nexHeaders();
+    const r = await axios.get(`${BASE_URL}/document_types/${req.params.id}`, { headers, params: req.query });
+    res.json(r.data);
+  } catch (err) {
+    res.status(err.response?.status || 500).json(err.response?.data || { error: err.message });
+  }
+});
+
+// =============================================================
+// PATIENT DOCUMENTS
+// =============================================================
+app.get('/patients/:id/documents', async (req, res) => {
+  try {
+    const headers = await nexHeaders();
+    const r = await axios.get(`${BASE_URL}/patients/${req.params.id}/documents`, { headers, params: req.query });
+    res.json(r.data);
+  } catch (err) {
+    res.status(err.response?.status || 500).json(err.response?.data || { error: err.message });
+  }
+});
+
+app.post('/patients/:id/documents', async (req, res) => {
+  try {
+    const headers = await nexHeaders();
+    const form = new FormData();
+    if (req.body.document) {
+      Object.keys(req.body.document).forEach(k => {
+        form.append(`document[${k}]`, req.body.document[k]);
+      });
+    }
+    const r = await axios.post(`${BASE_URL}/patients/${req.params.id}/documents`, form, {
+      headers: { ...headers, ...form.getHeaders() },
+      params: req.query
+    });
+    res.json(r.data);
+  } catch (err) {
+    res.status(err.response?.status || 500).json(err.response?.data || { error: err.message });
+  }
+});
+
+// =============================================================
+// MESSAGES / COMMUNICATIONS
+// =============================================================
+app.post('/messages/send', async (req, res) => {
+  try {
+    const headers = await nexHeaders();
+    const r = await axios.post(`${BASE_URL}/communications`, req.body, {
+      headers: { ...headers, 'Content-Type': 'application/json' },
+      params: req.query
+    });
+    res.json(r.data);
+  } catch (err) {
+    res.status(err.response?.status || 500).json(err.response?.data || { error: err.message });
+  }
+});
+
+// =============================================================
+// MAILBOX — SOAP Note flow between Doctor app & Patient app
+// =============================================================
+
 const noteMailbox = [];
 let noteIdCounter = 1;
 
-// ---------- 1. DOCTOR: Create a note (sends SOAP to CCGPT, saves remix) ----------
+// 1. DOCTOR: Create note → CCGPT remix → save as pending
 app.post('/notes/create', async (req, res) => {
   try {
     const { patient_id, patient_name, soap_text, ccgpt_key, openai_key } = req.body;
@@ -18,7 +237,6 @@ app.post('/notes/create', async (req, res) => {
       return res.status(400).json({ error: 'Missing fields: patient_id, soap_text, ccgpt_key, openai_key required' });
     }
 
-    // Call CompliantChatGPT to remix the SOAP into parent-friendly text
     const ccgptResponse = await axios.post(
       'https://api.compliantchatgpt.com/v1/chat/completions',
       {
@@ -63,13 +281,13 @@ app.post('/notes/create', async (req, res) => {
   }
 });
 
-// ---------- 2. DOCTOR: List notes pending approval ----------
+// 2. DOCTOR: List notes pending approval
 app.get('/notes/pending', (req, res) => {
   const pending = noteMailbox.filter(n => n.status === 'pending');
   res.json({ count: pending.length, notes: pending });
 });
 
-// ---------- 3. DOCTOR: Approve a note (sometimes with edits) ----------
+// 3. DOCTOR: Approve a note (sometimes with edits)
 app.post('/notes/approve', (req, res) => {
   const { id, edited_text } = req.body;
   const note = noteMailbox.find(n => n.id === parseInt(id));
@@ -80,7 +298,7 @@ app.post('/notes/approve', (req, res) => {
   res.json({ success: true, note });
 });
 
-// ---------- 4. PATIENT: Get all approved notes for a patient ----------
+// 4. PATIENT: Get all approved notes for a patient
 app.get('/notes/patient/:id', (req, res) => {
   const patientId = parseInt(req.params.id);
   const approved = noteMailbox
@@ -89,7 +307,7 @@ app.get('/notes/patient/:id', (req, res) => {
   res.json({ count: approved.length, notes: approved });
 });
 
-// ---------- BONUS: Wipe mailbox (testing only) ----------
+// Wipe mailbox (testing only)
 app.post('/notes/wipe', (req, res) => {
   noteMailbox.length = 0;
   noteIdCounter = 1;
@@ -97,5 +315,8 @@ app.post('/notes/wipe', (req, res) => {
 });
 
 // =============================================================
-// END MAILBOX
+// START SERVER
 // =============================================================
+app.listen(PORT, () => {
+  console.log(`AHS NexHealth proxy live on port ${PORT}`);
+});
