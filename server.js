@@ -444,6 +444,19 @@ app.post('/trillet/book', async (req, res) => {
 });
 
 // =============================================================
+// OPERATORIES
+// =============================================================
+app.get('/operatories', async (req, res) => {
+  try {
+    const headers = await nexHeaders();
+    const r = await axios.get(`${BASE_URL}/operatories`, { headers, params: req.query });
+    res.json(r.data);
+  } catch (err) {
+    res.status(err.response?.status || 500).json(err.response?.data || { error: err.message });
+  }
+});
+
+// =============================================================
 // START SERVER
 // =============================================================
 app.listen(PORT, () => {
