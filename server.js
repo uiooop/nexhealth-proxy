@@ -2,6 +2,7 @@
 // AHS NEXHEALTH PROXY — Full server.js
 // Includes: NexHealth routes + Mailbox for SOAP note flow
 //           + Trillet phone booking routes
+//           + Availabilities route
 // =============================================================
 
 const express = require('express');
@@ -108,6 +109,32 @@ app.get('/locations', async (req, res) => {
   try {
     const headers = await nexHeaders();
     const r = await axios.get(`${BASE_URL}/locations`, { headers, params: req.query });
+    res.json(r.data);
+  } catch (err) {
+    res.status(err.response?.status || 500).json(err.response?.data || { error: err.message });
+  }
+});
+
+// =============================================================
+// AVAILABILITIES
+// =============================================================
+app.get('/availabilities', async (req, res) => {
+  try {
+    const headers = await nexHeaders();
+    const r = await axios.get(`${BASE_URL}/availabilities`, { headers, params: req.query });
+    res.json(r.data);
+  } catch (err) {
+    res.status(err.response?.status || 500).json(err.response?.data || { error: err.message });
+  }
+});
+
+app.post('/availabilities', async (req, res) => {
+  try {
+    const headers = await nexHeaders();
+    const r = await axios.post(`${BASE_URL}/availabilities`, req.body, {
+      headers: { ...headers, 'Content-Type': 'application/json' },
+      params: req.query
+    });
     res.json(r.data);
   } catch (err) {
     res.status(err.response?.status || 500).json(err.response?.data || { error: err.message });
@@ -244,51 +271,25 @@ app.post('/messages/send', async (req, res) => {
 const noteMailbox = [];
 let noteIdCounter = 1;
 
-// 1. DOCTOR: Create note → CCGPT remix → save as pending
 app.post('/notes/create', async (req, res) => {
   try {
     const { patient_id, patient_name, soap_text, ccgpt_key, openai_key } = req.body;
-
     if (!patient_id || !soap_text || !ccgpt_key || !openai_key) {
       return res.status(400).json({ error: 'Missing fields: patient_id, soap_text, ccgpt_key, openai_key required' });
     }
-
     const ccgptResponse = await axios.post(
       'https://api.compliantchatgpt.com/v1/chat/completions',
       {
         model: 'gpt-4o-2024-05-13',
         messages: [
-          {
-            role: 'system',
-            content: 'You are a warm, friendly dental assistant. Translate clinical SOAP notes into simple, kind, parent-friendly language. Use plain English. No clinical jargon. Keep it short — 3 to 5 sentences. End with a warm sign-off from the doctor.'
-          },
-          {
-            role: 'user',
-            content: `Translate this SOAP note for ${patient_name || 'the patient'}'s parent:\n\n${soap_text}`
-          }
+          { role: 'system', content: 'You are a warm, friendly dental assistant. Translate clinical SOAP notes into simple, kind, parent-friendly language. Use plain English. No clinical jargon. Keep it short — 3 to 5 sentences. End with a warm sign-off from the doctor.' },
+          { role: 'user', content: `Translate this SOAP note for ${patient_name || 'the patient'}'s parent:\n\n${soap_text}` }
         ]
       },
-      {
-        headers: {
-          'x-compliantchatgpt-key': ccgpt_key,
-          'x-openai-key': openai_key,
-          'Content-Type': 'application/json'
-        }
-      }
+      { headers: { 'x-compliantchatgpt-key': ccgpt_key, 'x-openai-key': openai_key, 'Content-Type': 'application/json' } }
     );
-
     const remixed = ccgptResponse.data.content || ccgptResponse.data.choices?.[0]?.message?.content || 'Remix failed';
-
-    const note = {
-      id: noteIdCounter++,
-      patient_id: parseInt(patient_id),
-      patient_name: patient_name || 'Patient',
-      original_soap: soap_text,
-      remixed_text: remixed,
-      status: 'pending',
-      created_at: new Date().toISOString()
-    };
-
+    const note = { id: noteIdCounter++, patient_id: parseInt(patient_id), patient_name: patient_name || 'Patient', original_soap: soap_text, remixed_text: remixed, status: 'pending', created_at: new Date().toISOString() };
     noteMailbox.push(note);
     res.json({ success: true, note });
   } catch (err) {
@@ -297,13 +298,11 @@ app.post('/notes/create', async (req, res) => {
   }
 });
 
-// 2. DOCTOR: List notes pending approval
 app.get('/notes/pending', (req, res) => {
   const pending = noteMailbox.filter(n => n.status === 'pending');
   res.json({ count: pending.length, notes: pending });
 });
 
-// 3. DOCTOR: Approve a note (sometimes with edits)
 app.post('/notes/approve', (req, res) => {
   const { id, edited_text } = req.body;
   const note = noteMailbox.find(n => n.id === parseInt(id));
@@ -314,7 +313,6 @@ app.post('/notes/approve', (req, res) => {
   res.json({ success: true, note });
 });
 
-// 4. PATIENT: Get all approved notes for a patient
 app.get('/notes/patient/:id', (req, res) => {
   const patientId = parseInt(req.params.id);
   const approved = noteMailbox
@@ -323,7 +321,6 @@ app.get('/notes/patient/:id', (req, res) => {
   res.json({ count: approved.length, notes: approved });
 });
 
-// Wipe mailbox (testing only)
 app.post('/notes/wipe', (req, res) => {
   noteMailbox.length = 0;
   noteIdCounter = 1;
@@ -332,12 +329,8 @@ app.post('/notes/wipe', (req, res) => {
 
 // =============================================================
 // TRILLET PHONE BOOKING ROUTES
-// Trillet AI receptionist → NexHealth booking via proxy
-// All routes secured with x-trillet-secret header
 // =============================================================
 
-// 1. PATIENT LOOKUP BY NAME
-//    Trillet identifies caller before booking
 app.post('/trillet/identify', async (req, res) => {
   if (!validateTrillet(req, res)) return;
   try {
@@ -345,254 +338,108 @@ app.post('/trillet/identify', async (req, res) => {
     if (!first_name && !last_name) {
       return res.status(400).json({ error: 'Need at least first_name or last_name' });
     }
-
     const headers = await nexHeaders();
-    const params = {
-      subdomain: SUBDOMAIN,
-      location_id: LOCATION_ID,
-      name: `${first_name || ''} ${last_name || ''}`.trim()
-    };
-
+    const params = { subdomain: SUBDOMAIN, location_id: LOCATION_ID, name: `${first_name || ''} ${last_name || ''}`.trim() };
     const r = await axios.get(`${BASE_URL}/patients`, { headers, params });
-
     let patients = [];
-    if (r.data?.data?.patients) {
-      patients = Object.values(r.data.data.patients);
-    } else if (Array.isArray(r.data?.data)) {
-      patients = r.data.data;
-    }
-
+    if (r.data?.data?.patients) { patients = Object.values(r.data.data.patients); }
+    else if (Array.isArray(r.data?.data)) { patients = r.data.data; }
     if (date_of_birth && patients.length > 1) {
       const dob = date_of_birth.replace(/\//g, '-');
       patients = patients.filter(p => p.date_of_birth && p.date_of_birth.includes(dob.split('-').pop()));
     }
-
     if (patients.length === 0) {
-      return res.json({
-        found: false,
-        message: 'No patient found with that name. Are you a new patient?'
-      });
+      return res.json({ found: false, message: 'No patient found with that name. Are you a new patient?' });
     }
-
     const patient = patients[0];
-    return res.json({
-      found: true,
-      patient_id: patient.id,
-      name: `${patient.first_name} ${patient.last_name}`,
-      dob: patient.date_of_birth,
-      message: `Found ${patient.first_name} ${patient.last_name}.`
-    });
-
+    return res.json({ found: true, patient_id: patient.id, name: `${patient.first_name} ${patient.last_name}`, dob: patient.date_of_birth, message: `Found ${patient.first_name} ${patient.last_name}.` });
   } catch (err) {
     console.error('Trillet identify error:', err.response?.data || err.message);
     res.status(500).json({ error: 'Patient lookup failed', detail: err.message });
   }
 });
 
-// 2. GET APPOINTMENT TYPES
-//    Trillet asks patient what type of visit they need
 app.get('/trillet/appointment_types', async (req, res) => {
   if (!validateTrillet(req, res)) return;
   try {
     const headers = await nexHeaders();
-    const r = await axios.get(`${BASE_URL}/appointment_types`, {
-      headers,
-      params: { subdomain: SUBDOMAIN, location_id: LOCATION_ID }
-    });
-
+    const r = await axios.get(`${BASE_URL}/appointment_types`, { headers, params: { subdomain: SUBDOMAIN, location_id: LOCATION_ID } });
     const types = r.data?.data?.appointment_types || r.data?.data || [];
-    const formatted = types.map(t => ({
-      id: t.id,
-      name: t.name,
-      duration: t.minutes,
-      spoken: t.name
-    }));
-
-    res.json({
-      types: formatted,
-      message: `We offer: ${formatted.map(t => t.name).join(', ')}. Which type of visit do you need?`
-    });
-
+    const formatted = types.map(t => ({ id: t.id, name: t.name, duration: t.minutes, spoken: t.name }));
+    res.json({ types: formatted, message: `We offer: ${formatted.map(t => t.name).join(', ')}. Which type of visit do you need?` });
   } catch (err) {
     console.error('Trillet appt types error:', err.response?.data || err.message);
     res.status(500).json({ error: 'Failed to fetch appointment types', detail: err.message });
   }
 });
 
-// 3. GET PROVIDERS
-//    Trillet asks if patient has provider preference
 app.get('/trillet/providers', async (req, res) => {
   if (!validateTrillet(req, res)) return;
   try {
     const headers = await nexHeaders();
-    const r = await axios.get(`${BASE_URL}/providers`, {
-      headers,
-      params: { subdomain: SUBDOMAIN, location_id: LOCATION_ID }
-    });
-
+    const r = await axios.get(`${BASE_URL}/providers`, { headers, params: { subdomain: SUBDOMAIN, location_id: LOCATION_ID } });
     const providers = r.data?.data?.providers || r.data?.data || [];
-    const formatted = providers
-      .filter(p => p.is_active !== false)
-      .map(p => ({
-        id: p.id,
-        name: `${p.first_name} ${p.last_name}`,
-        spoken: `Doctor ${p.last_name}`
-      }));
-
-    res.json({
-      providers: formatted,
-      message: `Our providers are: ${formatted.map(p => p.name).join(', ')}. Do you have a preference?`
-    });
-
+    const formatted = providers.filter(p => p.is_active !== false).map(p => ({ id: p.id, name: `${p.first_name} ${p.last_name}`, spoken: `Doctor ${p.last_name}` }));
+    res.json({ providers: formatted, message: `Our providers are: ${formatted.map(p => p.name).join(', ')}. Do you have a preference?` });
   } catch (err) {
     console.error('Trillet providers error:', err.response?.data || err.message);
     res.status(500).json({ error: 'Failed to fetch providers', detail: err.message });
   }
 });
 
-// 4. GET AVAILABLE SLOTS
-//    Trillet reads available times back to patient
 app.post('/trillet/slots', async (req, res) => {
   if (!validateTrillet(req, res)) return;
   try {
-    const {
-      provider_id,
-      appointment_type_id,
-      start_date,
-      days_ahead = 14
-    } = req.body;
-
+    const { provider_id, appointment_type_id, start_date, days_ahead = 14 } = req.body;
     const headers = await nexHeaders();
+    const startDate = start_date ? start_date : new Date().toISOString().split('T')[0];
 
-    const start = start_date ? new Date(start_date) : new Date();
-    const end = new Date(start);
-    end.setDate(end.getDate() + parseInt(days_ahead));
+    const params = new URLSearchParams();
+    params.append('subdomain', SUBDOMAIN);
+    params.append('start_date', startDate);
+    params.append('days', days_ahead.toString());
+    params.append('lids[]', LOCATION_ID);
+    params.append('pids[]', provider_id || '483310768');
+    if (appointment_type_id) params.append('appointment_type_id', appointment_type_id);
 
-    const formatDate = (d) => d.toISOString().split('T')[0];
-
-    const params = {
-      subdomain: SUBDOMAIN,
-      location_id: LOCATION_ID,
-      start_date: formatDate(start),
-      end_date: formatDate(end),
-      ...(provider_id && { provider_id }),
-      ...(appointment_type_id && { appointment_type_id })
-    };
-
-    const r = await axios.get(`${BASE_URL}/appointment_slots`, { headers, params });
-    const slots = r.data?.data?.appointment_slots || r.data?.data || [];
+    const r = await axios.get(`${BASE_URL}/appointment_slots?${params.toString()}`, { headers });
+    const data = r.data?.data || [];
+    const slots = Array.isArray(data) ? data.flatMap(d => (d.slots || []).map(s => ({ ...s, provider_id: d.pid, lid: d.lid }))) : [];
 
     if (!slots.length) {
-      return res.json({
-        available: false,
-        message: `No available appointments in the next ${days_ahead} days. Would you like me to check further out?`,
-        slots: []
-      });
+      return res.json({ available: false, message: `No available appointments in the next ${days_ahead} days. Would you like me to check further out?`, slots: [] });
     }
 
     const topSlots = slots.slice(0, 5).map((slot, i) => {
       const dt = new Date(slot.time || slot.start_time);
-      const readable = dt.toLocaleString('en-US', {
-        weekday: 'long',
-        month: 'long',
-        day: 'numeric',
-        hour: 'numeric',
-        minute: '2-digit',
-        hour12: true
-      });
-      return {
-        index: i + 1,
-        slot_id: slot.id,
-        provider_id: slot.provider_id,
-        operatory_id: slot.operatory_id,
-        start_time: slot.time || slot.start_time,
-        duration: slot.duration,
-        readable,
-        spoken: `Option ${i + 1}: ${readable}`
-      };
+      const readable = dt.toLocaleString('en-US', { weekday: 'long', month: 'long', day: 'numeric', hour: 'numeric', minute: '2-digit', hour12: true });
+      return { index: i + 1, provider_id: slot.provider_id, operatory_id: slot.operatory_id, start_time: slot.time || slot.start_time, readable, spoken: `Option ${i + 1}: ${readable}` };
     });
 
-    const spokenList = topSlots.map(s => s.spoken).join('. ');
-
-    res.json({
-      available: true,
-      count: topSlots.length,
-      slots: topSlots,
-      message: `I found ${topSlots.length} available times. ${spokenList}. Which option would you prefer?`
-    });
-
+    res.json({ available: true, count: topSlots.length, slots: topSlots, message: `I found ${topSlots.length} available times. ${topSlots.map(s => s.spoken).join('. ')}. Which option would you prefer?` });
   } catch (err) {
     console.error('Trillet slots error:', err.response?.data || err.message);
-    res.status(500).json({ error: 'Slot lookup failed', detail: err.message });
+    res.status(500).json({ error: 'Slot lookup failed', detail: err.response?.data || err.message });
   }
 });
 
-// 5. BOOK THE APPOINTMENT
-//    Confirms booking into NexHealth → syncs to Open Dental
 app.post('/trillet/book', async (req, res) => {
   if (!validateTrillet(req, res)) return;
   try {
-    const {
-      patient_id,
-      provider_id,
-      operatory_id,
-      start_time,
-      appointment_type_id,
-      duration = 60,
-      note = 'Booked via AHS AI phone receptionist'
-    } = req.body;
-
+    const { patient_id, provider_id, operatory_id, start_time, appointment_type_id, duration = 60, note = 'Booked via AHS AI phone receptionist' } = req.body;
     if (!patient_id || !provider_id || !start_time) {
-      return res.status(400).json({
-        error: 'Missing required fields: patient_id, provider_id, start_time'
-      });
+      return res.status(400).json({ error: 'Missing required fields: patient_id, provider_id, start_time' });
     }
-
     const headers = await nexHeaders();
-
-    const body = {
-      appointment: {
-        patient_id: parseInt(patient_id),
-        provider_id: parseInt(provider_id),
-        start_time,
-        minutes: parseInt(duration),
-        note,
-        ...(operatory_id && { operatory_id: parseInt(operatory_id) }),
-        ...(appointment_type_id && { appointment_type_id: parseInt(appointment_type_id) })
-      }
-    };
-
-    const r = await axios.post(`${BASE_URL}/appointments`, body, {
-      headers: { ...headers, 'Content-Type': 'application/json' },
-      params: { subdomain: SUBDOMAIN, location_id: LOCATION_ID }
-    });
-
+    const body = { appointment: { patient_id: parseInt(patient_id), provider_id: parseInt(provider_id), start_time, minutes: parseInt(duration), note, ...(operatory_id && { operatory_id: parseInt(operatory_id) }), ...(appointment_type_id && { appointment_type_id: parseInt(appointment_type_id) }) } };
+    const r = await axios.post(`${BASE_URL}/appointments`, body, { headers: { ...headers, 'Content-Type': 'application/json' }, params: { subdomain: SUBDOMAIN, location_id: LOCATION_ID } });
     const appt = r.data?.data?.appointment || r.data?.data;
-
     const dt = new Date(start_time);
-    const readable = dt.toLocaleString('en-US', {
-      weekday: 'long',
-      month: 'long',
-      day: 'numeric',
-      hour: 'numeric',
-      minute: '2-digit',
-      hour12: true
-    });
-
-    res.json({
-      success: true,
-      appointment_id: appt?.id,
-      message: `Your appointment is confirmed for ${readable}. You will receive a reminder before your visit. Is there anything else I can help you with?`,
-      appointment: appt
-    });
-
+    const readable = dt.toLocaleString('en-US', { weekday: 'long', month: 'long', day: 'numeric', hour: 'numeric', minute: '2-digit', hour12: true });
+    res.json({ success: true, appointment_id: appt?.id, message: `Your appointment is confirmed for ${readable}. You will receive a reminder before your visit. Is there anything else I can help you with?`, appointment: appt });
   } catch (err) {
     console.error('Trillet book error:', err.response?.data || err.message);
-    res.status(500).json({
-      error: 'Booking failed',
-      message: 'I was unable to complete the booking. Let me connect you with our front desk.',
-      detail: err.response?.data || err.message
-    });
+    res.status(500).json({ error: 'Booking failed', message: 'I was unable to complete the booking. Let me connect you with our front desk.', detail: err.response?.data || err.message });
   }
 });
 
