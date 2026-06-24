@@ -412,7 +412,7 @@ app.post('/trillet/slots', async (req, res) => {
 
     const topSlots = slots.slice(0, 5).map((slot, i) => {
       const dt = new Date(slot.time || slot.start_time);
-      const readable = dt.toLocaleString('en-US', { weekday: 'long', month: 'long', day: 'numeric', hour: 'numeric', minute: '2-digit', hour12: true });
+      const readable = dt.toLocaleString('en-US', { weekday: 'long', month: 'long', day: 'numeric', hour: 'numeric', minute: '2-digit', hour12: true, timeZone: 'America/Los_Angeles' });
       return { index: i + 1, provider_id: slot.provider_id, operatory_id: slot.operatory_id, start_time: slot.time || slot.start_time, readable, spoken: `Option ${i + 1}: ${readable}` };
     });
 
@@ -435,7 +435,7 @@ app.post('/trillet/book', async (req, res) => {
     const r = await axios.post(`${BASE_URL}/appointments`, body, { headers: { ...headers, 'Content-Type': 'application/json' }, params: { subdomain: SUBDOMAIN, location_id: LOCATION_ID } });
     const appt = r.data?.data?.appointment || r.data?.data;
     const dt = new Date(start_time);
-    const readable = dt.toLocaleString('en-US', { weekday: 'long', month: 'long', day: 'numeric', hour: 'numeric', minute: '2-digit', hour12: true });
+    const readable = dt.toLocaleString('en-US', { weekday: 'long', month: 'long', day: 'numeric', hour: 'numeric', minute: '2-digit', hour12: true, timeZone: 'America/Los_Angeles' });
     res.json({ success: true, appointment_id: appt?.id, message: `Your appointment is confirmed for ${readable}. You will receive a reminder before your visit. Is there anything else I can help you with?`, appointment: appt });
   } catch (err) {
     console.error('Trillet book error:', err.response?.data || err.message);
