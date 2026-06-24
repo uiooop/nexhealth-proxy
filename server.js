@@ -60,6 +60,36 @@ function validateTrillet(req, res) {
 }
 
 // =============================================================
+// MULTI-TENANT — resolve practice from request, fallback to env defaults
+// subdomain + location_id flow in per-practice from the Trillet body.
+// One proxy serves all practices; no per-practice deploy.
+// =============================================================
+function resolveTenant(req) {
+  const subdomain = req.body?.subdomain || req.query?.subdomain || SUBDOMAIN;
+  const location_id = req.body?.location_id || req.query?.location_id || LOCATION_ID;
+  return { subdomain, location_id };
+}
+
+// =============================================================
+// SLOT REF — bundle start_time + operatory_id + provider_id into one
+// opaque, non-PHI token so the chosen slot can never desync. Stateless:
+// nothing stored server-side, so it scales across any number of replicas
+// and keeps the proxy a clean pass-through for BAA/HIPAA.
+// =============================================================
+function encodeSlotRef(slot) {
+  const payload = JSON.stringify({ t: slot.start_time, o: slot.operatory_id, p: slot.provider_id });
+  return Buffer.from(payload).toString('base64url');
+}
+function decodeSlotRef(ref) {
+  try {
+    const obj = JSON.parse(Buffer.from(ref, 'base64url').toString('utf8'));
+    return { start_time: obj.t, operatory_id: obj.o, provider_id: obj.p };
+  } catch {
+    return null;
+  }
+}
+
+// =============================================================
 // HEALTH CHECK
 // =============================================================
 app.get('/', (req, res) => {
@@ -161,6 +191,16 @@ app.get('/appointment_types', async (req, res) => {
   try {
     const headers = await nexHeaders();
     const r = await axios.get(`${BASE_URL}/appointment_types`, { headers, params: req.query });
+    res.json(r.data);
+  } catch (err) {
+    res.status(err.response?.status || 500).json(err.response?.data || { error: err.message });
+  }
+});
+
+app.post('/appointment_types', async (req, res) => {
+  try {
+    const headers = await nexHeaders();
+    const r = await axios.post(`${BASE_URL}/appointment_types`, req.body, { headers: { ...headers, 'Content-Type': 'application/json' }, params: { subdomain: SUBDOMAIN } });
     res.json(r.data);
   } catch (err) {
     res.status(err.response?.status || 500).json(err.response?.data || { error: err.message });
@@ -339,7 +379,8 @@ app.post('/trillet/identify', async (req, res) => {
       return res.status(400).json({ error: 'Need at least first_name or last_name' });
     }
     const headers = await nexHeaders();
-    const params = { subdomain: SUBDOMAIN, location_id: LOCATION_ID, name: `${first_name || ''} ${last_name || ''}`.trim() };
+    const { subdomain, location_id } = resolveTenant(req);
+    const params = { subdomain, location_id, name: `${first_name || ''} ${last_name || ''}`.trim() };
     const r = await axios.get(`${BASE_URL}/patients`, { headers, params });
     let patients = [];
     if (r.data?.data?.patients) { patients = Object.values(r.data.data.patients); }
@@ -391,14 +432,15 @@ app.post('/trillet/slots', async (req, res) => {
   if (!validateTrillet(req, res)) return;
   try {
     const { provider_id, appointment_type_id, start_date, days_ahead = 14 } = req.body;
+    const { subdomain, location_id } = resolveTenant(req);
     const headers = await nexHeaders();
     const startDate = start_date ? start_date : new Date().toISOString().split('T')[0];
 
     const params = new URLSearchParams();
-    params.append('subdomain', SUBDOMAIN);
+    params.append('subdomain', subdomain);
     params.append('start_date', startDate);
     params.append('days', days_ahead.toString());
-    params.append('lids[]', LOCATION_ID);
+    params.append('lids[]', location_id);
     params.append('pids[]', provider_id || '483310768');
     if (appointment_type_id) params.append('appointment_type_id', appointment_type_id);
 
@@ -411,9 +453,11 @@ app.post('/trillet/slots', async (req, res) => {
     }
 
     const topSlots = slots.slice(0, 5).map((slot, i) => {
-      const dt = new Date(slot.time || slot.start_time);
+      const start_time = slot.time || slot.start_time;
+      const dt = new Date(start_time);
       const readable = dt.toLocaleString('en-US', { weekday: 'long', month: 'long', day: 'numeric', hour: 'numeric', minute: '2-digit', hour12: true, timeZone: 'America/Los_Angeles' });
-      return { index: i + 1, provider_id: slot.provider_id, operatory_id: slot.operatory_id, start_time: slot.time || slot.start_time, readable, spoken: `Option ${i + 1}: ${readable}` };
+      const slot_ref = encodeSlotRef({ start_time, operatory_id: slot.operatory_id, provider_id: slot.provider_id });
+      return { index: i + 1, slot_ref, provider_id: slot.provider_id, operatory_id: slot.operatory_id, start_time, readable, spoken: `Option ${i + 1}: ${readable}` };
     });
 
     res.json({ available: true, count: topSlots.length, slots: topSlots, message: `I found ${topSlots.length} available times. ${topSlots.map(s => s.spoken).join('. ')}. Which option would you prefer?` });
@@ -426,13 +470,37 @@ app.post('/trillet/slots', async (req, res) => {
 app.post('/trillet/book', async (req, res) => {
   if (!validateTrillet(req, res)) return;
   try {
-    const { patient_id, provider_id, operatory_id, start_time, appointment_type_id, duration = 60, note = 'Booked via AHS AI phone receptionist' } = req.body;
+    const { patient_id, slot_ref, appointment_type_id, duration = 60, note = 'Booked via AHS AI phone receptionist' } = req.body;
+    const { subdomain, location_id } = resolveTenant(req);
+
+    // Preferred path: slot_ref bundles start_time + operatory_id + provider_id
+    // (can't desync). Fallback: explicit fields if a caller sends them directly.
+    let { provider_id, operatory_id, start_time } = req.body;
+    if (slot_ref) {
+      const decoded = decodeSlotRef(slot_ref);
+      if (!decoded) {
+        return res.status(400).json({ error: 'Invalid slot_ref', message: 'That time slot was not recognized. Let me pull up the available times again.' });
+      }
+      start_time = decoded.start_time;
+      operatory_id = decoded.operatory_id;
+      provider_id = decoded.provider_id;
+    }
+
     if (!patient_id || !provider_id || !start_time) {
-      return res.status(400).json({ error: 'Missing required fields: patient_id, provider_id, start_time' });
+      return res.status(400).json({ error: 'Missing required fields: patient_id, provider_id, start_time (or slot_ref)' });
     }
     const headers = await nexHeaders();
-    const body = { appt: { patient_id: parseInt(patient_id), provider_id: parseInt(provider_id), start_time, minutes: parseInt(duration), note, ...(operatory_id && { operatory_id: parseInt(operatory_id) }), ...(appointment_type_id && { appointment_type_id: parseInt(appointment_type_id) }) } };
-    const r = await axios.post(`${BASE_URL}/appointments`, body, { headers: { ...headers, 'Content-Type': 'application/json' }, params: { subdomain: SUBDOMAIN, location_id: LOCATION_ID, notify_patient: false } });
+    // NexHealth duration comes from appointment_type_id OR an explicit end_time — never a "minutes" field.
+    // If a type is given, let it set the length. Otherwise compute end_time from duration so it's never a stray 15-min slot.
+    const apptObj = { patient_id: parseInt(patient_id), provider_id: parseInt(provider_id), start_time, note };
+    if (operatory_id) apptObj.operatory_id = parseInt(operatory_id);
+    if (appointment_type_id) {
+      apptObj.appointment_type_id = parseInt(appointment_type_id);
+    } else {
+      apptObj.end_time = new Date(new Date(start_time).getTime() + parseInt(duration) * 60000).toISOString();
+    }
+    const body = { appt: apptObj };
+    const r = await axios.post(`${BASE_URL}/appointments`, body, { headers: { ...headers, 'Content-Type': 'application/json' }, params: { subdomain, location_id, notify_patient: false } });
     const appt = r.data?.data?.appointment || r.data?.data;
     const dt = new Date(start_time);
     const readable = dt.toLocaleString('en-US', { weekday: 'long', month: 'long', day: 'numeric', hour: 'numeric', minute: '2-digit', hour12: true, timeZone: 'America/Los_Angeles' });
