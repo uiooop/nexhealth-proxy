@@ -431,8 +431,8 @@ app.post('/trillet/book', async (req, res) => {
       return res.status(400).json({ error: 'Missing required fields: patient_id, provider_id, start_time' });
     }
     const headers = await nexHeaders();
-    const body = { appointment: { patient_id: parseInt(patient_id), provider_id: parseInt(provider_id), start_time, minutes: parseInt(duration), note, ...(operatory_id && { operatory_id: parseInt(operatory_id) }), ...(appointment_type_id && { appointment_type_id: parseInt(appointment_type_id) }) } };
-    const r = await axios.post(`${BASE_URL}/appointments`, body, { headers: { ...headers, 'Content-Type': 'application/json' }, params: { subdomain: SUBDOMAIN, location_id: LOCATION_ID } });
+    const body = { appt: { patient_id: parseInt(patient_id), provider_id: parseInt(provider_id), start_time, minutes: parseInt(duration), note, ...(operatory_id && { operatory_id: parseInt(operatory_id) }), ...(appointment_type_id && { appointment_type_id: parseInt(appointment_type_id) }) } };
+    const r = await axios.post(`${BASE_URL}/appointments`, body, { headers: { ...headers, 'Content-Type': 'application/json' }, params: { subdomain: SUBDOMAIN, location_id: LOCATION_ID, notify_patient: false } });
     const appt = r.data?.data?.appointment || r.data?.data;
     const dt = new Date(start_time);
     const readable = dt.toLocaleString('en-US', { weekday: 'long', month: 'long', day: 'numeric', hour: 'numeric', minute: '2-digit', hour12: true, timeZone: 'America/Los_Angeles' });
