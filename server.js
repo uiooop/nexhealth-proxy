@@ -89,6 +89,30 @@ function decodeSlotRef(ref) {
   }
 }
 
+// Shared slot fetch — used by /trillet/slots AND /trillet/book (option_number path)
+// so the numbered list is derived identically both times. Stateless.
+async function fetchTopSlots({ subdomain, location_id, provider_id, appointment_type_id, start_date, days_ahead }) {
+  const headers = await nexHeaders();
+  const startDate = start_date ? start_date : new Date().toISOString().split('T')[0];
+  const params = new URLSearchParams();
+  params.append('subdomain', subdomain);
+  params.append('start_date', startDate);
+  params.append('days', String(days_ahead || 14));
+  params.append('lids[]', location_id);
+  params.append('pids[]', provider_id || '483310768');
+  if (appointment_type_id) params.append('appointment_type_id', appointment_type_id);
+  const r = await axios.get(`${BASE_URL}/appointment_slots?${params.toString()}`, { headers });
+  const data = r.data?.data || [];
+  const slots = Array.isArray(data) ? data.flatMap(d => (d.slots || []).map(s => ({ ...s, provider_id: d.pid, lid: d.lid }))) : [];
+  return slots.slice(0, 5).map((slot, i) => {
+    const start_time = slot.time || slot.start_time;
+    const dt = new Date(start_time);
+    const readable = dt.toLocaleString('en-US', { weekday: 'long', month: 'long', day: 'numeric', hour: 'numeric', minute: '2-digit', hour12: true, timeZone: 'America/Los_Angeles' });
+    const slot_ref = encodeSlotRef({ start_time, operatory_id: slot.operatory_id, provider_id: slot.provider_id });
+    return { index: i + 1, slot_ref, provider_id: slot.provider_id, operatory_id: slot.operatory_id, start_time, readable, spoken: `Option ${i + 1}: ${readable}` };
+  });
+}
+
 // =============================================================
 // HEALTH CHECK
 // =============================================================
@@ -433,32 +457,11 @@ app.post('/trillet/slots', async (req, res) => {
   try {
     const { provider_id, appointment_type_id, start_date, days_ahead = 14 } = req.body;
     const { subdomain, location_id } = resolveTenant(req);
-    const headers = await nexHeaders();
-    const startDate = start_date ? start_date : new Date().toISOString().split('T')[0];
+    const topSlots = await fetchTopSlots({ subdomain, location_id, provider_id, appointment_type_id, start_date, days_ahead });
 
-    const params = new URLSearchParams();
-    params.append('subdomain', subdomain);
-    params.append('start_date', startDate);
-    params.append('days', days_ahead.toString());
-    params.append('lids[]', location_id);
-    params.append('pids[]', provider_id || '483310768');
-    if (appointment_type_id) params.append('appointment_type_id', appointment_type_id);
-
-    const r = await axios.get(`${BASE_URL}/appointment_slots?${params.toString()}`, { headers });
-    const data = r.data?.data || [];
-    const slots = Array.isArray(data) ? data.flatMap(d => (d.slots || []).map(s => ({ ...s, provider_id: d.pid, lid: d.lid }))) : [];
-
-    if (!slots.length) {
+    if (!topSlots.length) {
       return res.json({ available: false, message: `No available appointments in the next ${days_ahead} days. Would you like me to check further out?`, slots: [] });
     }
-
-    const topSlots = slots.slice(0, 5).map((slot, i) => {
-      const start_time = slot.time || slot.start_time;
-      const dt = new Date(start_time);
-      const readable = dt.toLocaleString('en-US', { weekday: 'long', month: 'long', day: 'numeric', hour: 'numeric', minute: '2-digit', hour12: true, timeZone: 'America/Los_Angeles' });
-      const slot_ref = encodeSlotRef({ start_time, operatory_id: slot.operatory_id, provider_id: slot.provider_id });
-      return { index: i + 1, slot_ref, provider_id: slot.provider_id, operatory_id: slot.operatory_id, start_time, readable, spoken: `Option ${i + 1}: ${readable}` };
-    });
 
     res.json({ available: true, count: topSlots.length, slots: topSlots, message: `I found ${topSlots.length} available times. ${topSlots.map(s => s.spoken).join('. ')}. Which option would you prefer?` });
   } catch (err) {
@@ -470,13 +473,26 @@ app.post('/trillet/slots', async (req, res) => {
 app.post('/trillet/book', async (req, res) => {
   if (!validateTrillet(req, res)) return;
   try {
-    const { patient_id, slot_ref, appointment_type_id, duration = 60, note = 'Booked via AHS AI phone receptionist' } = req.body;
+    const { patient_id, slot_ref, option_number, provider_id: bodyProvider, appointment_type_id, start_date, days_ahead, duration = 60, note = 'Booked via AHS AI phone receptionist' } = req.body;
     const { subdomain, location_id } = resolveTenant(req);
 
-    // Preferred path: slot_ref bundles start_time + operatory_id + provider_id
-    // (can't desync). Fallback: explicit fields if a caller sends them directly.
     let { provider_id, operatory_id, start_time } = req.body;
-    if (slot_ref) {
+
+    // PRIMARY path: option_number (1-5). Aire only has to pass back a single
+    // digit — far more reliable for a voice agent than an 88-char token.
+    // We re-derive the identical slot list and select the chosen index.
+    if (option_number) {
+      const n = parseInt(option_number);
+      const list = await fetchTopSlots({ subdomain, location_id, provider_id: bodyProvider, appointment_type_id, start_date, days_ahead });
+      const chosen = list.find(s => s.index === n);
+      if (!chosen) {
+        return res.status(409).json({ error: 'Slot no longer available', message: 'That time was just taken. Let me pull up the current available times again.' });
+      }
+      start_time = chosen.start_time;
+      operatory_id = chosen.operatory_id;
+      provider_id = chosen.provider_id;
+    } else if (slot_ref) {
+      // Fallback path: slot_ref bundles time + operatory + provider (can't desync).
       const decoded = decodeSlotRef(slot_ref);
       if (!decoded) {
         return res.status(400).json({ error: 'Invalid slot_ref', message: 'That time slot was not recognized. Let me pull up the available times again.' });
@@ -487,7 +503,7 @@ app.post('/trillet/book', async (req, res) => {
     }
 
     if (!patient_id || !provider_id || !start_time) {
-      return res.status(400).json({ error: 'Missing required fields: patient_id, provider_id, start_time (or slot_ref)' });
+      return res.status(400).json({ error: 'Missing required fields: patient_id plus one of option_number / slot_ref / explicit fields' });
     }
     const headers = await nexHeaders();
     // NexHealth duration comes from appointment_type_id OR an explicit end_time — never a "minutes" field.
