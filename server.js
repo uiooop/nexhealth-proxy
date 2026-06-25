@@ -391,6 +391,18 @@ app.post('/notes/wipe', (req, res) => {
   res.json({ success: true, wiped: true });
 });
 
+// Resolve a patient_id from a name — so Book never depends on a fragile
+// variable handoff. Aire always knows the caller's name; the proxy finds the ID.
+async function resolvePatientId({ subdomain, location_id, first_name, last_name }) {
+  const headers = await nexHeaders();
+  const params = { subdomain, location_id, name: `${first_name || ''} ${last_name || ''}`.trim() };
+  const r = await axios.get(`${BASE_URL}/patients`, { headers, params });
+  let patients = [];
+  if (r.data?.data?.patients) { patients = Object.values(r.data.data.patients); }
+  else if (Array.isArray(r.data?.data)) { patients = r.data.data; }
+  return patients.length ? patients[0].id : null;
+}
+
 // =============================================================
 // TRILLET PHONE BOOKING ROUTES
 // =============================================================
@@ -473,10 +485,20 @@ app.post('/trillet/slots', async (req, res) => {
 app.post('/trillet/book', async (req, res) => {
   if (!validateTrillet(req, res)) return;
   try {
-    const { patient_id, slot_ref, option_number, provider_id: bodyProvider, appointment_type_id, start_date, days_ahead, duration = 60, note = 'Booked via AHS AI phone receptionist' } = req.body;
+    const { patient_id: bodyPatientId, first_name, last_name, slot_ref, option_number, provider_id: bodyProvider, appointment_type_id, start_date, days_ahead, duration = 60, note = 'Booked via AHS AI phone receptionist' } = req.body;
     const { subdomain, location_id } = resolveTenant(req);
 
     let { provider_id, operatory_id, start_time } = req.body;
+
+    // Resolve patient: use patient_id if passed, otherwise look it up by name.
+    // This removes any dependency on Trillet carrying the ID between API calls.
+    let patient_id = bodyPatientId;
+    if (!patient_id && (first_name || last_name)) {
+      patient_id = await resolvePatientId({ subdomain, location_id, first_name, last_name });
+    }
+    if (!patient_id) {
+      return res.status(404).json({ error: 'Patient not found', message: 'I could not find your record to complete the booking. Let me connect you with our front desk.' });
+    }
 
     // PRIMARY path: option_number (1-5). Aire only has to pass back a single
     // digit — far more reliable for a voice agent than an 88-char token.
@@ -502,8 +524,8 @@ app.post('/trillet/book', async (req, res) => {
       provider_id = decoded.provider_id;
     }
 
-    if (!patient_id || !provider_id || !start_time) {
-      return res.status(400).json({ error: 'Missing required fields: patient_id plus one of option_number / slot_ref / explicit fields' });
+    if (!provider_id || !start_time) {
+      return res.status(400).json({ error: 'Missing required fields: need option_number / slot_ref / explicit time fields' });
     }
     const headers = await nexHeaders();
     // NexHealth duration comes from appointment_type_id OR an explicit end_time — never a "minutes" field.
