@@ -403,6 +403,23 @@ async function resolvePatientId({ subdomain, location_id, first_name, last_name 
   return patients.length ? patients[0].id : null;
 }
 
+// Create a brand-new patient so first-time callers can book too.
+// NexHealth requires provider_id + first_name + last_name; we add DOB + phone
+// for clean records. Returns the new patient's id.
+async function createPatient({ subdomain, location_id, first_name, last_name, date_of_birth, phone_number, provider_id }) {
+  const headers = await nexHeaders();
+  const bio = {};
+  if (date_of_birth) bio.date_of_birth = date_of_birth;
+  if (phone_number) bio.phone_number = phone_number;
+  const body = {
+    provider: { provider_id: parseInt(provider_id) },
+    patient: { first_name, last_name, ...(Object.keys(bio).length && { bio }) }
+  };
+  const r = await axios.post(`${BASE_URL}/patients`, body, { headers: { ...headers, 'Content-Type': 'application/json' }, params: { subdomain, location_id } });
+  const created = r.data?.data?.user || r.data?.data;
+  return created?.id || null;
+}
+
 // =============================================================
 // TRILLET PHONE BOOKING ROUTES
 // =============================================================
@@ -485,19 +502,25 @@ app.post('/trillet/slots', async (req, res) => {
 app.post('/trillet/book', async (req, res) => {
   if (!validateTrillet(req, res)) return;
   try {
-    const { patient_id: bodyPatientId, first_name, last_name, slot_ref, option_number, provider_id: bodyProvider, appointment_type_id, start_date, days_ahead, duration = 60, note = 'Booked via AHS AI phone receptionist' } = req.body;
+    const { patient_id: bodyPatientId, first_name, last_name, date_of_birth, phone_number, slot_ref, option_number, provider_id: bodyProvider, appointment_type_id, start_date, days_ahead, duration = 60, note = 'Booked via AHS AI phone receptionist' } = req.body;
     const { subdomain, location_id } = resolveTenant(req);
 
     let { provider_id, operatory_id, start_time } = req.body;
 
-    // Resolve patient: use patient_id if passed, otherwise look it up by name.
-    // This removes any dependency on Trillet carrying the ID between API calls.
+    // Resolve patient: use patient_id if passed, otherwise look up by name.
+    // If still not found, this is a NEW patient — create their record, then book.
     let patient_id = bodyPatientId;
+    let is_new_patient = false;
     if (!patient_id && (first_name || last_name)) {
       patient_id = await resolvePatientId({ subdomain, location_id, first_name, last_name });
+      if (!patient_id) {
+        const intakeProvider = bodyProvider || provider_id || '483310768';
+        patient_id = await createPatient({ subdomain, location_id, first_name, last_name, date_of_birth, phone_number, provider_id: intakeProvider });
+        is_new_patient = true;
+      }
     }
     if (!patient_id) {
-      return res.status(404).json({ error: 'Patient not found', message: 'I could not find your record to complete the booking. Let me connect you with our front desk.' });
+      return res.status(400).json({ error: 'Could not resolve or create patient', message: 'I need your first name and last name to book. Could you share those?' });
     }
 
     // PRIMARY path: option_number (1-5). Aire only has to pass back a single
@@ -542,10 +565,20 @@ app.post('/trillet/book', async (req, res) => {
     const appt = r.data?.data?.appointment || r.data?.data;
     const dt = new Date(start_time);
     const readable = dt.toLocaleString('en-US', { weekday: 'long', month: 'long', day: 'numeric', hour: 'numeric', minute: '2-digit', hour12: true, timeZone: 'America/Los_Angeles' });
-    res.json({ success: true, appointment_id: appt?.id, message: `Your appointment is confirmed for ${readable}. You will receive a reminder before your visit. Is there anything else I can help you with?`, appointment: appt });
+    const welcome = is_new_patient ? "Welcome to the practice! I've created your record and booked you. " : '';
+    const say = `${welcome}You're all set — your appointment is confirmed for ${readable}. You'll get a reminder before your visit.`;
+    res.json({
+      success: true,
+      booking_confirmed: true,
+      say_to_caller: say,
+      appointment_id: appt?.id,
+      is_new_patient,
+      message: say,
+      appointment: appt
+    });
   } catch (err) {
     console.error('Trillet book error:', err.response?.data || err.message);
-    res.status(500).json({ error: 'Booking failed', message: 'I was unable to complete the booking. Let me connect you with our front desk.', detail: err.response?.data || err.message });
+    res.status(500).json({ success: false, booking_confirmed: false, say_to_caller: 'I ran into a problem completing that booking. Let me connect you with our front desk.', error: 'Booking failed', message: 'I was unable to complete the booking. Let me connect you with our front desk.', detail: err.response?.data || err.message });
   }
 });
 
