@@ -415,8 +415,10 @@ async function createPatient({ subdomain, location_id, first_name, last_name, da
     : `${(first_name || 'patient').toLowerCase().replace(/[^a-z]/g, '')}.${(last_name || 'new').toLowerCase().replace(/[^a-z]/g, '')}.${Date.now()}@ahs-patients.com`;
   // DOB is required by NexHealth here; if not collected, use a safe placeholder so booking never hard-fails.
   const safeDob = date_of_birth && /^\d{4}-\d{2}-\d{2}$/.test(date_of_birth) ? date_of_birth : '1990-01-01';
-  const bio = { new_patient: true, date_of_birth: safeDob };
-  if (phone_number) bio.phone_number = phone_number;
+  // Phone is also required and cannot be blank at this location.
+  const cleanPhone = (phone_number || '').replace(/[^\d]/g, '');
+  const safePhone = cleanPhone.length >= 10 ? cleanPhone : '0000000000';
+  const bio = { new_patient: true, date_of_birth: safeDob, phone_number: safePhone };
   const body = {
     provider: { provider_id: parseInt(provider_id) },
     patient: { first_name, last_name, email: safeEmail, bio }
