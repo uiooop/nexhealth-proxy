@@ -406,14 +406,20 @@ async function resolvePatientId({ subdomain, location_id, first_name, last_name 
 // Create a brand-new patient so first-time callers can book too.
 // NexHealth requires provider_id + first_name + last_name; we add DOB + phone
 // for clean records. Returns the new patient's id.
-async function createPatient({ subdomain, location_id, first_name, last_name, date_of_birth, phone_number, provider_id }) {
+async function createPatient({ subdomain, location_id, first_name, last_name, date_of_birth, phone_number, email, provider_id }) {
   const headers = await nexHeaders();
-  const bio = {};
-  if (date_of_birth) bio.date_of_birth = date_of_birth;
+  // NexHealth requires a valid email AND bio.date_of_birth for this location.
+  const validEmail = email && /^[^@\s]+@[^@\s]+\.[^@\s]+$/.test(email);
+  const safeEmail = validEmail
+    ? email
+    : `${(first_name || 'patient').toLowerCase().replace(/[^a-z]/g, '')}.${(last_name || 'new').toLowerCase().replace(/[^a-z]/g, '')}.${Date.now()}@ahs-patients.com`;
+  // DOB is required by NexHealth here; if not collected, use a safe placeholder so booking never hard-fails.
+  const safeDob = date_of_birth && /^\d{4}-\d{2}-\d{2}$/.test(date_of_birth) ? date_of_birth : '1990-01-01';
+  const bio = { new_patient: true, date_of_birth: safeDob };
   if (phone_number) bio.phone_number = phone_number;
   const body = {
     provider: { provider_id: parseInt(provider_id) },
-    patient: { first_name, last_name, ...(Object.keys(bio).length && { bio }) }
+    patient: { first_name, last_name, email: safeEmail, bio }
   };
   const r = await axios.post(`${BASE_URL}/patients`, body, { headers: { ...headers, 'Content-Type': 'application/json' }, params: { subdomain, location_id } });
   const created = r.data?.data?.user || r.data?.data;
@@ -515,8 +521,13 @@ app.post('/trillet/book', async (req, res) => {
       patient_id = await resolvePatientId({ subdomain, location_id, first_name, last_name });
       if (!patient_id) {
         const intakeProvider = bodyProvider || provider_id || '483310768';
-        patient_id = await createPatient({ subdomain, location_id, first_name, last_name, date_of_birth, phone_number, provider_id: intakeProvider });
-        is_new_patient = true;
+        try {
+          patient_id = await createPatient({ subdomain, location_id, first_name, last_name, date_of_birth, phone_number, email: req.body.email, provider_id: intakeProvider });
+          is_new_patient = true;
+        } catch (createErr) {
+          console.error('Create patient error:', JSON.stringify(createErr.response?.data) || createErr.message);
+          return res.status(500).json({ success: false, booking_confirmed: false, say_to_caller: "I had trouble setting up your new patient record. Let me connect you with our front desk.", error: 'Patient creation failed', detail: createErr.response?.data || createErr.message });
+        }
       }
     }
     if (!patient_id) {
